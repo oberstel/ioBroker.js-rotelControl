@@ -1,0 +1,753 @@
+// Prototyp für einen Adapter der Rotel Geräte steuern kann
+
+console.log('Start Rotel-Control V1...');
+const serialPort = require('serialport');
+
+// import serialPort from 'serialport';
+const port = new serialPort('/dev/ttyVUSB0', {baudRate: 38400 });               // Port und Baudrate konfigurierbnar machen
+
+const adapter = 'Rotel';
+var modellName = 'Rotel RSX-03';                                                    // Konfiguierbar machen, um ggf. mehrere Instanzen für verschiede Geräte laufen zu lassen
+var modellID = 0xc6;
+var volumeSteps = 2;
+var volumeLoweringLevel = 10;
+
+// Initial Values
+var staticText = '';
+var isStatic = true;
+var delay = false;
+var Radio = false;
+
+// Datenpunkte anlegen
+createState(adapter+'.on', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "state"});
+createState(adapter+'.input', 0, {read: true, write: true, type: "number", 
+                            states: {1:"Video 1",2:"Video 2",3:"Video 3",4:"Video 4",5:"CD",6:"Tape",7:"Phono",8:"Radio",9:"Multi Input"}, 
+                            def: 0, unit: ''});
+createState(adapter+'.powerToggle', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: 'button'});
+createState(adapter+'.volumeLevel', 0, {read: true, write: true, type: "number", def: 0, min: 0, max: 100, unit: ''});
+createState(adapter+'.volumeLowering', false, {read: true, write: true, type: "boolean", role: 'button'});
+createState(adapter+'.volumeUp', false, {read: true, write: true, type: "boolean", role: 'button'});
+createState(adapter+'.volumeDown', false, {read: true, write: true, type: "boolean", role: 'button'});
+createState(adapter+'.mute', false, {read: true, write: true, type: "boolean", role: 'state'});
+createState(adapter+'.cinemaEq', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "state"});
+createState(adapter+'.dynamicRange', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "state"});
+createState(adapter+'.dspMode', 0, {read: true, write: true, type: "number", def: 0, unit: '', role: "state"});
+createState(adapter+'.dolbyMode', 0, {read: true, write: true, type: "number", def: 0, unit: '', role: "state"});
+createState(adapter+'.stereo', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "state"});
+//createState(adapter+'.dsp', false, {read: true, write: true, type: "boolean", def: 0, unit: '', role: "state"});
+
+// Infos zum aktuellen Zustand
+createState(adapter+'.info.display', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.audioFormat', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.samplingRate', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.speaker', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.audioMode', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.modell', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.connected', false, {read: true, write: false, type: "boolean", def: false, unit: '', role: "indicator"});
+createState(adapter+'.info.scrollText', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.digitalInput', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+createState(adapter+'.info.dynamicRangeMode', '', {read: true, write: false, type: "string", def: '', unit: '', role: "indicator"});
+
+// Radio
+createState(adapter+'.radioPreset', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "state"});
+createState(adapter+'.radioTuneUp', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.radioTuneDown', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.radioPresetUp', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.radioPresetDown', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.radioMemory', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.neo6Mode', 0, {read: true, write: true, type: "number", def: 0, unit: '', role: "state"});
+createState(adapter+'.refresh', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+
+// OSD Stuff
+createState(adapter+'.osd.OnOff', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.osd.up', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.osd.down', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.osd.left', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.osd.right', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+createState(adapter+'.osd.enter', false, {read: true, write: true, type: "boolean", def: false, unit: '', role: "button"});
+
+// Debugging
+createState(adapter+'._cmdCode', '', {read: true, write: true, type: "string", def: '', unit: '', role: "state"});
+
+// Los gehts...
+// Connectivity testen
+port.on("error", (err) => {
+  setState(adapter+'.info.connected', false, true);
+    if (err) {
+      console.log(`Unable to connect serial port, ` + err.message);
+      console.log('I Give Up :-(');
+      console.log('');
+      stopScript('rotel-control');                                          
+     }
+});
+
+port.write(Buffer.from('open1', 'ascii'), function(err) {
+    if (err) 
+      return (err.message);
+    
+    console.log(`Connected to device ${modellName}, serial port: ${port.path} with ${port.baudRate} baud.`);
+    
+    // console.log(JSON.stringify(port));
+   
+    //for (const [key, value] of Object.prototype.toString(port)) {
+    //    console.log(`${key}: ${value}`);
+    //}
+
+});
+        
+
+////////////////////////////////////////////////////////////////////// WRITE
+port.on("open", function () {
+  console.log("open");
+    setState(adapter+'.info.connected', true, true);
+    setState(adapter+'.info.modell', modellName, true);
+
+//                                                                              Test _cmdCode
+    on ({id:'javascript.0.Rotel._cmdCode'}, function (obj) {
+        if (getState(obj.id).from != 'system.adapter.javascript.0') {
+            if (obj.state.val) {
+            //console.log ('Set cmdCode:'+ parseInt(obj.state.val, 16));
+            rotelWrite (0x10, parseInt(obj.state.val, 16));
+            }                  
+        }
+    });
+
+//                                                                              Power on/off
+    on ({id:'javascript.0.Rotel.on'}, function (obj) {
+        if (getState(obj.id).from != 'system.adapter.javascript.0') {
+        switch (obj.state.val) {
+            case true:
+                setState(adapter+'.info.display', 'power up'); 
+                console.log ('Turn Device on!');
+                rotelWrite (0x10, 0x4b);
+                break;
+            case false:
+                console.log ('Turn Device off!');
+                rotelWrite (0x10, 0x4a);
+            }   
+        }
+    });
+//                                                                              Power Toggle
+    on ({id:'javascript.0.Rotel.powerToggle'}, function (obj) {
+        if (obj.state.val === true) {
+        console.log ('Toggle device power');
+        rotelWrite (0x10, 0x0a);
+        }               
+    });
+//                                                                              Volume
+    on ({id:'javascript.0.Rotel.volumeLevel'}, function (obj) {
+        if (getState(obj.id).from != 'system.adapter.javascript.0') {           //////////////////////////////////////////////////
+            console.log ('Set volume level to:'+obj.state.val);
+            rotelWrite (0x30, obj.state.val);
+            delay = true;
+                setTimeout(function() {         // Delay damit der Slider nit springt weil der Zielwert noch nicht errericht wurde
+             //   console.log ('delay over');           // Debugging
+                delay = false;
+                }, 2000);
+        }
+    });
+
+        on ({id:'javascript.0.Rotel.volumeLowering',change: "ne"}, function (obj) {       // lower volume
+        if (obj.state.val == true) {
+            var newVolume = getState('javascript.0.Rotel.volumeLevel').val - volumeLoweringLevel;
+            console.log ('Lowered volume to level:', newVolume);
+            rotelWrite (0x30, newVolume);
+            } 
+            
+        if (obj.state.val == false) {
+            var newVolume = getState('javascript.0.Rotel.volumeLevel').val + volumeLoweringLevel;
+            console.log ('returned volume to level:', newVolume);
+            rotelWrite (0x30, newVolume);
+            } 
+       });
+
+        on ({id:'javascript.0.Rotel.volumeUp'}, function (obj) {       // VolUp Push
+        if (obj.state.val == true) {
+            var newVolume = getState('javascript.0.Rotel.volumeLevel').val + volumeSteps;
+            console.log ('Increase volume to level:', newVolume);
+            rotelWrite (0x30, newVolume);
+            }
+        });
+
+        
+
+        on ({id:'javascript.0.Rotel.volumeDown'}, function (obj) {     // VolDown Push
+        if (obj.state.val == true) {
+            var newVolume = getState('javascript.0.Rotel.volumeLevel').val - volumeSteps;
+            console.log ('Increase volume to level:', newVolume);
+            rotelWrite (0x30, newVolume);
+            }
+        });
+//                                                                              Mute
+    on ({id:'javascript.0.Rotel.mute'}, function (obj) {
+        if (getState(obj.id).from != 'system.adapter.javascript.0') {
+        switch (obj.state.val) {
+            case true:
+                console.log ('Enable Mute');
+                rotelWrite (0x14, 0x6c);        
+                break;
+            case false:
+                console.log ('Disable Mute');
+                rotelWrite (0x14, 0x6d);
+            }
+        }
+    });
+//                                                                              Input Source
+    on ({id:'javascript.0.Rotel.input'}, function (obj) {
+    if (getState(obj.id).from != 'system.adapter.javascript.0') {       // Sicherstellen das kein Loop entsteht
+        console.log ('Input change:'+obj.state.val);
+        switch (obj.state.val) {
+            case 1:                     // 'Video 1':
+                rotelWrite (0x10, 0x05);
+                break;
+            case 2:                      //'Video 2':
+                rotelWrite (0x10, 0x06);
+                break;
+            case 3:                     // 'Video 3':
+                rotelWrite (0x10, 0x07);
+                break;
+            case 4:                     // 'Video 4':
+                rotelWrite (0x10, 0x08);
+                break;
+            case 5:                     // 'CD':
+                rotelWrite (0x10, 0x02);
+                break;
+            case 6:                     // 'Tape':
+                rotelWrite (0x10, 0x04);
+                break;
+            case 7:                     // 'Phono':
+                rotelWrite (0x10, 0x35);
+                break;
+            case 8:                     // 'Radio':
+                rotelWrite (0x14, 0x03);
+                break;            
+            case 9:                     // 'Multi Input':
+            //    rotelWrite (0x10, 0x15);
+        } 
+    } 
+    });
+
+//                                                                              DSP (Music 1-4)
+      on ({id:'javascript.0.Rotel.dspMode'}, function (obj) {
+       
+    if (getState(obj.id).from != 'system.adapter.javascript.0') {
+        if (obj.state.val >= 0) {
+            console.log ('Set Digital Sound Processing to: ' + obj.state.val);
+            switch (obj.state.val) {
+            case 0:                     // none:
+                rotelWrite (0x10, 0x11);// set Dolby Prologic anstelle DSP
+                break;
+            case 1:                     // 'Music 1':
+                rotelWrite (0x10, 0x57);
+                break;
+            case 2:                      //'Music 2':
+                rotelWrite (0x10, 0x58);
+                break;
+            case 3:                     // 'Music 3':
+                rotelWrite (0x10, 0x59);
+                break;
+            case 4:                     // 'Music 4':
+                rotelWrite (0x10, 0x5a);
+            }
+        }
+    }
+    });
+
+//                                                                              Stereo / Bypass
+    on ({id:'javascript.0.Rotel.stereo'}, function (obj) {
+    if (getState(obj.id).from != 'system.adapter.javascript.0') {
+        console.log ('Set stereo:'+obj.state.val);
+        if (obj.state.val === true) {
+              rotelWrite (0x10, 0x11);
+              // rotelWrite (0x10, 0x11);  // Bypass
+              
+        }
+    }
+    });
+
+//                                                                              Dolby Prologic    
+    on ({id:'javascript.0.Rotel.dolbyMode'}, function (obj) {
+    if (getState(obj.id).from != 'system.adapter.javascript.0') {
+        if (obj.state.val >= 0) {
+            console.log ('Set Dolby Mode to: ' + obj.state.val);
+            switch (obj.state.val) {
+            case 0:                     // none:
+                rotelWrite (0x10, 0x11);// set Stereo
+                break;
+            case 1:                     // 'Dolby ProLogic':
+                rotelWrite (0x10, 0x5f);
+                break;
+            case 2:                     // 'Dolby ProLogic II - Music':
+                rotelWrite (0x10, 0x5e);
+                break;
+            case 3:                     // 'Dolby ProLogic II - Cinema':
+                rotelWrite (0x10, 0x5d);
+                break;
+            case 4:                     // 'Dolby ProLogic II - Game':
+                rotelWrite (0x10, 0x6f);
+                break;
+            case 5:                     // 'Dolby 3 Stereo':
+                rotelWrite (0x10, 0x12);
+                break;
+            }
+        }
+    }
+    });
+
+//                                                                              Dolby 3 Stereo
+ //  on ({id:'javascript.0.Rotel.dolby3stereo'}, function (obj) {
+ //   if (getState(obj.id).from != 'system.adapter.javascript.0') {
+ //       console.log ('Set Dolby 3 Stereo: ' + obj.state.val);
+ //       if (obj.state.val === true) {
+ //           rotelWrite (0x10, 0x12);    // set Dolby 3 Stereo
+ //       } else {
+ //           rotelWrite (0x10, 0x11);    // set Stereo
+ //       }
+ //   }
+ //   });
+//                                                                              Neo6 Mode (Music / Cinema Toggle) (nicht bei dts 5.1 Wiedergabe)
+    on ({id:'javascript.0.Rotel.neo6Mode'}, function (obj) {
+    if (getState(obj.id).from != 'system.adapter.javascript.0') {
+        if (obj.state.val >= 0) {
+            console.log ('Set dts neo:6 mode to: ' + obj.state.val);
+            switch (obj.state.val) {
+            case 0:                     // none:
+                rotelWrite (0x10, 0x11);// set PCM 2CH
+                break;
+            case 1:                     // 'neo:6 Music':
+                rotelWrite (0x10, 0x60);
+                break;
+            case 2:                      //'neo:6 Cinema':
+                rotelWrite (0x10, 0x61);
+         
+            }
+        }
+    }
+    });
+//                                                                              Dynamic Range (nur bei Dolby Digital)
+    on ({id:'javascript.0.Rotel.dynamicRange'}, function (obj) {
+    if (getState(obj.id).from != 'system.adapter.javascript.0') {
+        console.log ('Set Dynamic Range to:'+obj.state.val);
+        if (obj.state.val === true) {
+              rotelWrite (0x10, 0x16);  // set dynamic range
+        }
+    }
+    });
+//                                                                              Cinema EQ
+    on ({id:'javascript.0.Rotel.cinemaEq'}, function (obj) {
+    if (getState(obj.id).from != 'system.adapter.javascript.0') {
+       // console.log ('Set Cinema EQ to:'+obj.state.val);
+       // if (obj.state.val === true) {
+              rotelWrite (0x10, 0x4F);  // togglle Cinema EQ
+       // }
+    }
+    });
+
+//                                                                              Radio: Tune Up / Down
+    on ({id:'javascript.0.Rotel.radioTuneDown'}, function (obj) {
+        if (obj.state.val === true) {
+              rotelWrite (0x10, 0x29);  // tune down
+        }
+    });
+    on ({id:'javascript.0.Rotel.radioTuneUp'}, function (obj) {
+        if (obj.state.val === true) {
+              rotelWrite (0x10, 0x28);  // tune down
+        }
+    });
+//                                                                              Radio: Select Preset Up / Down
+    on ({id:'javascript.0.Rotel.radioPresetDown'}, function (obj) {
+        if (obj.state.val === true) {
+              rotelWrite (0x10, 0x29);  // tune down
+        }
+    });
+    on ({id:'javascript.0.Rotel.radioPresetUp'}, function (obj) {
+        if (obj.state.val === true) {
+              rotelWrite (0x10, 0x28);  // tune down
+        }
+    });
+//                                                                              refresh input signal information on displqy
+    on ({id:'javascript.0.Rotel.refresh'}, function (obj) {              
+        if (obj.state.val === true) {
+              rotelWrite (0x10, 0x22);  // unknown command
+        }
+    });
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// READ & SET
+
+// Read data that is available but keep the stream in "paused mode"
+port.on('readable', function () {
+	var read = port.read();
+
+// Errorhandling, falls das Datenpaket vom Verstärker nicht komplett ist
+    if (read.length != 26) {
+        console.log("Error: Incomplete Data");
+        return;
+        }
+
+// Device ID auslesen
+    var devID = read[2].toString(16);    
+
+// Checksumme auslesen
+    var readChkSum = read[25];    
+
+// Display Text auslesen
+    if (read) {
+        var display = read.subarray(4,17).toString();  // Letzte Byte excluded
+        setState (adapter+'.info.display', display.substr(0,8).trim(), true);
+        //console.log('Read: ' + '>' + display + '<');
+    }
+
+// Volume Level auslesen
+    var part = display.substr(11,2);
+    if (part != '' && delay != true && display.substring(0,2) != 'FM' && display.substring(0,2) != 'AM') {
+        var volumeLevel = parseInt(read.subarray(14,16),10); 
+          if (volumeLevel > 0 && volumeLevel < 100) {
+            console.log('Volume Level: '+ volumeLevel);
+            setState(adapter+'.volumeLevel', volumeLevel, true);
+          }
+    }
+
+// Stereo / Bypass aus Text erkennen
+    var part = display.trim(); 
+	switch (part) {
+        case 'STEREO':
+            setState(adapter+'.info.audioMode', 'Stereo', true);
+            break;
+        case 'BYPASS':
+             setState(adapter+'.info.audioMode', 'Bypass', true);
+        }
+
+// DSP Mode aus Text erkennen
+    var part = display.trim();
+    if (part != '') {
+        if (part == 'Music 1') {
+            setState(adapter+'.dspMode', 1, true)
+        }
+        if (part == 'Music 2') {
+            setState(adapter+'.dspMode', 2, true)
+        }
+        if (part == 'Music 3') {
+            setState(adapter+'.dspMode', 3, true)
+        }
+        if (part == 'Music 4') {
+            setState(adapter+'.dspMode', 4, true)
+        }
+    }
+
+// Cinema EQ aus Text erkennen ***
+    var part = display.trim(); 
+	switch (part) {
+        case 'CINEMA EQ ON':
+            setState(adapter+'.cinemaEq', true, true);
+            break;
+        case 'CINEMA EQ OFF':
+            setState(adapter+'.cinemaEq', false, true);
+        }
+        
+// AudioFormat aus Text erkennen
+    var part = display.trim();
+    if (part == 'PCM 2CH' || part == 'PCM 5CH' || part == 'PCM 7CH') { 
+        setState(adapter+'.info.audioFormat', part, true); 
+        setState(adapter+'.info.samplingRate', '', true);
+    }
+
+// Parsing sampling rate (if displayed)
+    var part = display.trim();
+    if (part == '44.1KHZ' || part == '48KHZ' || part == '88.2KHZ' || part == '96KHZ' || part == '176.4KHZ' || part == '192KHZ')  { 
+       // if (part.search('KHZ') > 0 ) {
+       // var samplingRate = part.substring((part.search('KHZ')-8),8);
+       var samplingRate = part;
+       setState(adapter+'.info.samplingRate', samplingRate.trim(), true); 
+    }   
+
+// Dynamic Range erkennen
+    var part = display.trim();
+         //       console.log('***'+part+'***');
+    if (part == 'D.RANGE MIN') { console.log('***MIN***'); setState(adapter+'.info.dynamicRangeMode', 'Min', true) }
+    if (part == 'D.RANGE MID') { setState(adapter+'.info.dynamicRangeMode', 'Mid', true) }
+
+
+// Radio aus Text erkennen
+    var part = display.trim();
+    if (part.substring(0,2) == 'FM' || part.substring(0,2) == 'AM' || part.substring(0,5) == 'TUNER') {
+            if (part.substring(0,2) == 'FM') {
+                setState (adapter+'.info.display', display.substr(0,2) + ' ' + display.substr(2,3) + '.' + display.substr(5,5) , true);    
+                setState(adapter+'.input', 8, true); // FM Tuned Bit gesetzt
+            } else {
+                setState (adapter+'.info.display', display.substr(0,10).trim(), true);
+                setState (adapter+'.input', 8, true); // FM Tuned Bit gesetz
+            }
+    } 
+
+    
+// Flags auslesen
+    var flag = new Array(8);
+    var i;
+    for (i = 1; i <= 8; i++) { 
+        var pos = 16 + i;
+        flag[i] = byteString(read[pos]);     
+        // console.log(`Flag ${i}: ` + flag[i]);    // Debug Mode to display bit 7-0
+        //console.log(`Flag 5: ` + flag[5]);    // Debug Mode to display bit 7-0
+        } 
+
+    // isDevice On / Off?
+    // console.log('#######'+ Number(flag[8].substr(0,7)));
+    if (Number(flag[8].substr(0,7)) === 0) {
+        setState(adapter+'.on', false, true);      // Gerät ist aus 
+        setState(adapter+'.info.audioFormat', '', true);
+        setState(adapter+'.info.samplingRate', '', true);
+        setState(adapter+'.info.audioMode', '', true);
+        setState(adapter+'.info.speaker', '', true);
+        setState(adapter+'.input', 0, true);
+       setState(adapter+'.volumeLowering', false, true);
+        setState(adapter+'.info.display', 'off', true);
+    } else {
+        setState(adapter+'.on', true, true);      // Gerät ist an
+    }
+
+    // Input Source erkennen
+    // if (flag[3].substr(1,1) == 1) { setState(adapter+'.input', 9, true);}     // Multi Input erkennen
+    var part = display.substr(0,8).trim();
+        switch (part) {
+            case 'MEDIAPC': 
+            setState(adapter+'.input', 1, true);
+            break;
+            case 'APPLE TV': 
+            setState(adapter+'.input', 2, true);
+            break;
+            case 'SMSL DP3': 
+            setState(adapter+'.input', 3, true);
+            break;
+            case 'AUX': 
+            setState(adapter+'.input', 4, true);
+            break;
+            case 'CD': 
+            setState(adapter+'.input', 5, true);
+            break;
+            case 'TAPE': 
+            setState(adapter+'.input', 6, true);
+            break;
+            case 'PHONO': 
+            setState(adapter+'.input', 7, true);
+        }
+
+    // Digital Inputs ***
+    // FLAG 3 - Bit 7,6,5,4 - Digital Input (Toslink/Coaxial 1/2) 
+    //console.log('Flag3: ' + flag[3].substr(0,7));                // Debug Mode to display bit 7-0 
+    let portText, portNumber;
+        if (flag[3].substr(0,1) == 1) { portText='Toslink' }                   
+        if (flag[3].substr(1,1) == 1) { portText='Coaxial' }                   
+        if (flag[3].substr(2,1) == 1) { portNumber='1' }   
+        if (flag[3].substr(3,1) == 1) { portNumber='2' }   
+        if (flag[3].substr(0,4) == 0) { portText=''; portNumber = '' }
+        setState(adapter+'.info.digitalInput', portText + ' ' + portNumber, true);
+    
+
+    // Audio quality festlegen
+    var part = display.trim(); 
+   // console.log('Flag5: ' + flag[5].substr(0,7));                // Debug Mode to display bit 7-0 
+   // console.log('Flag7: ' + flag[7].substr(0,7));                // Debug Mode to display bit 7-0 
+    // FLAG 5 - Bit 7 - Dolby Digitial 
+        //if (flag[5].substr(0,5) != 0 || flag[7].substr(0,5) != 0 ) {  
+        if (flag[5].substr(0,1) == 1) { 
+            setState(adapter+'.info.audioMode', 'Dolby Digital', true);
+            setState(adapter+'.dolbyMode', 6, true);
+        }     
+        //if (flag[5].substr(0,1) == 0) { setState(adapter+'.info.audioMode', '', true);}     
+
+    // FLAG 5 - Bit 6 - Dolby Prologic
+    //    if (flag[5].substr(1,1) == 1) { 
+    //        setState(adapter+'.info.audioMode', 'Dolby Pro Logic', true);
+    //        setState(adapter+'.dolbyMode', 1, true);
+    //        }      
+        
+    // FLAG 5 - Bit 5 - Dolby Prologic II 
+        if (flag[5].substr(2,1) == 1) { // Dolby PLII Bit gesetzt  
+            if (part == 'PRO LOGIC') { setState(adapter+'.dolbyMode', 1, true);
+                                    setState(adapter+'.info.audioMode', 'Dolby Pro Logic', true) }
+
+            if (part == 'CINEMA') { setState(adapter+'.dolbyMode', 3, true);
+                                    setState(adapter+'.info.audioMode', 'Dolby Pro Logic II - Cinema', true) }
+            if (part == 'MUSIC') { setState(adapter+'.dolbyMode', 2, true);
+                                    setState(adapter+'.info.audioMode', 'Dolby Pro Logic II - Music', true) }
+            if (part == 'GAME') { setState(adapter+'.dolbyMode', 4, true);
+                                   setState(adapter+'.info.audioMode', 'Dolby Pro Logic II - Game', true) }
+            if (part == '3 STEREO') { setState(adapter+'.info.audioMode', 'Dolby 3 Stereo', true) }                                   
+        }
+        if (flag[5].substr(2,1) == 0 && flag[5].substr(0,1) == 0) { // Dolby PLII Bit nicht gesetzt  und kein Dolby Digital gesetzt ist
+            // setState(adapter+'.info.audioMode', '', true); 
+            // setState(adapter+'.info.audioFormat', '', true);
+            setState(adapter+'.dolbyMode', 0, true);      
+        }  
+
+    // FLAG 5 - Bit 
+    if (flag[5].substr(0,6) == 0 && flag[7].substr(0,6) == 0) {
+        setState(adapter+'.info.audioMode', 'Stereo', true);
+        if ( readChkSum == 0x05 ) {                                 // wenn device aus ist, ist die Checksumme immer 0x05
+            setState(adapter+'.info.audioMode', '', true);
+        }
+    }  
+//+++++++++++++++++++++++
+
+        if (flag[5].substr(3,1) == 1) { 
+            setState(adapter+'.info.audioMode', 'Dolby 3 Stereo', true);
+            setState(adapter+'.dolbyMode', 5, true);
+            }
+
+        if (flag[5].substr(4,1) == 1) { 
+            setState(adapter+'.info.audioFormat', 'HDCD', true);
+            setState(adapter+'.info.audioMode', 'Stereo', true);
+            
+            //setState(adapter+'.info.samplingRate', '44.1KHz', true);
+            } 
+        if (flag[5].substr(5,1) == 1) {
+            setState(adapter+'.info.audioMode', 'DSP', true); 
+        }
+        if (flag[5].substr(5,1) == 0) { 
+            setState(adapter+'.dspMode', 0, true); 
+        }                                 
+        if (flag[7].substr(0,1) == 1) { setState(adapter+'.info.audioFormat', 'MPEG', true);} 
+        if (flag[7].substr(1,1) == 1) { 
+            //if (part != 'NEO') setState(adapter+'.info.audioFormat', 'dts', true);
+            if (part == 'CINEMA') { setState(adapter+'.neo6Mode', 2, true);
+                                    setState(adapter+'.info.audioMode', 'dts Neo:6 - Cinema', true);}
+            if (part == 'MUSIC') { setState(adapter+'.neo6Mode', 1, true);
+                                   setState(adapter+'.info.audioMode', 'dts Neo:6 - Music', true);}
+            
+            //if (part == 'DTS') { setState(adapter+'.neo6Mode', 0, true);
+            //                       setState(adapter+'.info.audioMode', 'dts', true);}
+                   
+        } 
+        if (flag[7].substr(0,6) == 0) { setState(adapter+'.neo6Mode', 0, true);    }           // Neo6 ist ausgeschaltet
+    
+        if (flag[7].substr(0,1) == 1) { setState(adapter+'.info.audioMode', 'MPEG', true) } 
+        //if (flag[7].substr(1,1) == 1) { setState(adapter+'.info.audioMode', 'dts', true);}            
+        if (flag[7].substr(2,1) == 1) { setState(adapter+'.info.audioMode', 'dts ES', true) }       
+        if (flag[7].substr(3,1) == 1) { setState(adapter+'.info.audioMode', 'THX', true) } 
+        if (flag[7].substr(4,1) == 1) { setState(adapter+'.info.audioMode', 'Surround', true) } 
+        if (flag[7].substr(5,1) == 1) { setState(adapter+'.info.audioMode', 'Dolby Digital-EX', true);
+                                        setState(adapter+'.dolbyMode', 7, true)} 
+    //}
+    
+    // Parsing speaker setup
+    //    console.log('Flag8: ' + flag[8]);                // Debug Mode to display bit 7-0
+    //    console.log('Flag7: ' + flag[7].substr(6,2));    // Debug Mode to display bit 1-0
+        if (flag[8] == '10100000') { setState(adapter+'.info.speaker', '2.0', true);}
+        if (flag[8] == '10100100') { setState(adapter+'.info.speaker', '2.1', true);}
+        if (flag[8] == '11111100') { setState(adapter+'.info.speaker', '5.1', true);}
+        if (flag[8] == '11111101') { setState(adapter+'.info.speaker', '6.1', true);}
+        if (flag[8] == '11111100' && flag[7].substr(6,2) == '11') {setState(adapter+'.info.speaker', '7.1', true);}
+
+    // Dolby Features
+    if (flag[5].substr(6,1) == 1) { setState(adapter+'.dynamicRange', true, true);}
+    if (flag[5].substr(6,1) == 0) { setState(adapter+'.dynamicRange', false, true);
+                                    setState(adapter+'.info.dynamicRangeMode', 'Max', true);
+                                   }
+
+    /*if (flag[5].substr(5,1) == 1) {
+        setState(adapter+'.dsp', true, true);
+    } else {
+        setState(adapter+'.dsp', false, true);
+
+    }*/
+    
+}); // END "on.readable"
+
+}); // END on.open
+
+////////////////////////////////////////////////////////////////////// ADAPTER CLOSE
+// close connection if script stopped
+onStop(function (callback) {
+    console.log('Stop Script...');
+    port.close(function (err) {
+    console.log('port closed ', err);
+    });
+  callback();
+}, 2000 /*ms*/);
+
+////////////////////////////////////////////////////////////////////// SOME FUNCTIONS
+
+// Send command to device !!!
+function rotelWrite (cmdType, cmdCode) {
+    var start = 0xfe;
+    var cmdLength = 0x03;
+    var devID = modellID;
+
+    var chkSum = cmdLength + devID + cmdType + cmdCode;
+    chkSum = chkSum.toString(16);
+    chkSum = '0x' + chkSum.substring(chkSum.length - 2);
+    
+    var cmd = [start, cmdLength, devID, cmdType, cmdCode, chkSum];
+    // var view = new Int32Array(cmd);
+    // console.log ('Send Command: >'+ view + '<');
+  
+
+   // port.on('data', function () {
+         var err = "";
+
+        port.write(cmd, function(error, result) {
+            // console.log("Console Write: " + cmd + " Returns: " + error + " / " + result);
+             if (err) {console.log("err: " + err); }
+             if (result) {console.log("result: " + result);}
+             });
+   //    });
+}
+// Buffer to Hex
+function buf2hex(buffer) { // buffer is an ArrayBuffer
+  return Array.prototype.map.call(new Uint8Array(buffer), x => ('00' + x.toString(16)).slice(-2)).join('');
+}
+
+// Byte to String
+function byteString(n) {
+  if (n < 0 || n > 255 || n % 1 !== 0) {
+      throw new Error(n + " does not fit in a byte");
+  }
+  return ("000000000" + n.toString(2)).substr(-8)
+}
+
+//Transform
+function checkBin(n){return/^[01]{1,64}$/.test(n)}
+function checkDec(n){return/^[0-9]{1,64}$/.test(n)}
+function checkHex(n){return/^[0-9A-Fa-f]{1,64}$/.test(n)}
+function pad(s,z){s=""+s;return s.length<z?pad("0"+s,z):s}
+function unpad(s){s=""+s;return s.replace(/^0+/,'')}
+
+//Decimal operations
+function Dec2Bin(n){if(!checkDec(n)||n<0)return 0;return n.toString(2)}
+function Dec2Hex(n){if(!checkDec(n)||n<0)return 0;return n.toString(16)}
+
+//Binary Operations
+function Bin2Dec(n){if(!checkBin(n))return 0;return parseInt(n,2).toString(10)}
+function Bin2Hex(n){if(!checkBin(n))return 0;return parseInt(n,2).toString(16)}
+
+//Hexadecimal Operations
+function Hex2Bin(n){if(!checkHex(n))return 0;return parseInt(n,16).toString(2)}
+function Hex2Dec(n){if(!checkHex(n))return 0;return parseInt(n,16).toString(10)}
+
+
+// MyConfig
+var myRotelStates = [                   // Nur die States einpflegen, die auch gebraucht werden
+    {                       
+    1: {
+        0: '.dolbyDigital',
+        1: '.stereo',
+        2: 'Bit2',
+        3: 'Bit3',
+        4: 'Bit4',
+        5: 'Bit5',
+        6: 'Bit6',
+        7: 'Bit7'
+        }
+    }
+];
+
+var myRotelCommands = [
+    {
+        'VolumeUp': { 'type': 0x10, 'cmdCode': 0x11},
+        'VolumeDown': { 'type': 0x10, 'cmdCode': 0x12}
+    }
+]
+        
+
+
+
