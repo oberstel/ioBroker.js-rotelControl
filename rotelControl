@@ -1,18 +1,15 @@
 // Prototyp für einen Adapter der Rotel Geräte steuern kann
 
 console.log('Start Rotel-Control V1...');
-const serialPort = require('serialport');
 
-// import serialPort from 'serialport';
-const port = new serialPort('/dev/ttyVUSB0', {baudRate: 38400 });               // Port und Baudrate konfigurierbnar machen
+const { SerialPort } = require('serialport')
+const port = new SerialPort({ path: '/dev/ttyVUSB0', baudRate: 38400 });
 
 const adapter = 'Rotel';
-var modellName = 'Rotel RSX-03';                                                    // Konfiguierbar machen, um ggf. mehrere Instanzen für verschiede Geräte laufen zu lassen
-var modellID = 0xc6;
+var modell = 'Rotel RSX-03';                                                    // Konfiguierbar machen, um ggf. mehrere Instanzen für verschiede Geräte laufen zu lassen
 var volumeSteps = 2;
 var volumeLoweringLevel = 10;
 
-// Initial Values
 var staticText = '';
 var isStatic = true;
 var delay = false;
@@ -71,21 +68,27 @@ createState(adapter+'._cmdCode', '', {read: true, write: true, type: "string", d
 
 // Los gehts...
 // Connectivity testen
-port.on("error", (err) => {
+port.on('error', (err) => {
   setState(adapter+'.info.connected', false, true);
     if (err) {
-      console.log(`Unable to connect serial port, ` + err.message);
-      console.log('I Give Up :-(');
+      console.error(`Unable to connect serial port, ` + err.message);
+      console.warn('I Give Up :-(');
       console.log('');
       stopScript('rotel-control');                                          
      }
 });
 
-port.write(Buffer.from('open1', 'ascii'), function(err) {
-    if (err) 
-      return (err.message);
+port.write(Buffer.from('open', 'ascii'), function(err) {
+    rotelWrite (0x10, 0x00);
+
+    if (err) {
+      console.error(`Unable to connect to device, ` + err.message);
+      console.warn('I Give Up :-(');
+      console.log('');
+      stopScript('rotel-control');                                          
+    }
     
-    console.log(`Connected to device ${modellName}, serial port: ${port.path} with ${port.baudRate} baud.`);
+    console.log(`Connected to device ${modell}, serial port: ${port.path} with ${port.baudRate} baud.`);
     
     // console.log(JSON.stringify(port));
    
@@ -100,7 +103,7 @@ port.write(Buffer.from('open1', 'ascii'), function(err) {
 port.on("open", function () {
   console.log("open");
     setState(adapter+'.info.connected', true, true);
-    setState(adapter+'.info.modell', modellName, true);
+    setState(adapter+'.info.modell', modell, true);
 
 //                                                                              Test _cmdCode
     on ({id:'javascript.0.Rotel._cmdCode'}, function (obj) {
@@ -117,7 +120,7 @@ port.on("open", function () {
         if (getState(obj.id).from != 'system.adapter.javascript.0') {
         switch (obj.state.val) {
             case true:
-                setState(adapter+'.info.display', 'power up'); 
+                setState(adapter+'.info.display', 'power up', true); 
                 console.log ('Turn Device on!');
                 rotelWrite (0x10, 0x4b);
                 break;
@@ -150,21 +153,21 @@ port.on("open", function () {
         on ({id:'javascript.0.Rotel.volumeLowering',change: "ne"}, function (obj) {       // lower volume
         if (obj.state.val == true) {
             var newVolume = getState('javascript.0.Rotel.volumeLevel').val - volumeLoweringLevel;
-            console.log ('Lowered volume to level:', newVolume);
+            console.log ('Lowered volume to level: ' + newVolume);
             rotelWrite (0x30, newVolume);
             } 
             
         if (obj.state.val == false) {
             var newVolume = getState('javascript.0.Rotel.volumeLevel').val + volumeLoweringLevel;
-            console.log ('returned volume to level:', newVolume);
+            console.log ('returned volume to level: ' + newVolume);
             rotelWrite (0x30, newVolume);
             } 
        });
 
         on ({id:'javascript.0.Rotel.volumeUp'}, function (obj) {       // VolUp Push
         if (obj.state.val == true) {
-            var newVolume = getState('javascript.0.Rotel.volumeLevel').val + volumeSteps;
-            console.log ('Increase volume to level:', newVolume);
+            var newVolume = getState('javascript.0.Rotel.volumeLevel').val + 2;
+            console.log ('Increase volume to level: ' + newVolume);
             rotelWrite (0x30, newVolume);
             }
         });
@@ -173,8 +176,8 @@ port.on("open", function () {
 
         on ({id:'javascript.0.Rotel.volumeDown'}, function (obj) {     // VolDown Push
         if (obj.state.val == true) {
-            var newVolume = getState('javascript.0.Rotel.volumeLevel').val - volumeSteps;
-            console.log ('Increase volume to level:', newVolume);
+            var newVolume = getState('javascript.0.Rotel.volumeLevel').val - 2;
+            console.log ('Decrease volume to level: '+ newVolume);
             rotelWrite (0x30, newVolume);
             }
         });
@@ -379,10 +382,13 @@ port.on('readable', function () {
 	var read = port.read();
 
 // Errorhandling, falls das Datenpaket vom Verstärker nicht komplett ist
-    if (read.length != 26) {
-        console.log("Error: Incomplete Data");
-        return;
-        }
+  //  console.warn("Debug: <"+read+"> "+read.length);
+
+  //  if (read.length != 26) {
+  //      console.error("Port Read: Incomplete Data <"+read+"> "+read.length);
+  //      return;
+  //      }
+  // Länge kann unterschiedlich sein, je nach Länge der Bezeichnung vom Eingang
 
 // Device ID auslesen
     var devID = read[2].toString(16);    
@@ -394,16 +400,17 @@ port.on('readable', function () {
     if (read) {
         var display = read.subarray(4,17).toString();  // Letzte Byte excluded
         setState (adapter+'.info.display', display.substr(0,8).trim(), true);
-        //console.log('Read: ' + '>' + display + '<');
+       // console.log('Read: ' + '>' + display + '<');
     }
 
 // Volume Level auslesen
-    var part = display.substr(11,2);
+    var part = display.substr(10,2);
     if (part != '' && delay != true && display.substring(0,2) != 'FM' && display.substring(0,2) != 'AM') {
+       // console.log('Volume adjustment detected... Read: '+ part);
         var volumeLevel = parseInt(read.subarray(14,16),10); 
           if (volumeLevel > 0 && volumeLevel < 100) {
             console.log('Volume Level: '+ volumeLevel);
-            setState(adapter+'.volumeLevel', volumeLevel, true);
+            setState(adapter+'.volumeLevel', volumeLevel);
           }
     }
 
@@ -621,7 +628,7 @@ port.on('readable', function () {
         if (flag[7].substr(0,6) == 0) { setState(adapter+'.neo6Mode', 0, true);    }           // Neo6 ist ausgeschaltet
     
         if (flag[7].substr(0,1) == 1) { setState(adapter+'.info.audioMode', 'MPEG', true) } 
-        //if (flag[7].substr(1,1) == 1) { setState(adapter+'.info.audioMode', 'dts', true);}            
+        if (flag[7].substr(1,1) == 1) { setState(adapter+'.info.audioMode', 'dts', true);}            
         if (flag[7].substr(2,1) == 1) { setState(adapter+'.info.audioMode', 'dts ES', true) }       
         if (flag[7].substr(3,1) == 1) { setState(adapter+'.info.audioMode', 'THX', true) } 
         if (flag[7].substr(4,1) == 1) { setState(adapter+'.info.audioMode', 'Surround', true) } 
@@ -671,7 +678,7 @@ onStop(function (callback) {
 function rotelWrite (cmdType, cmdCode) {
     var start = 0xfe;
     var cmdLength = 0x03;
-    var devID = modellID;
+    var devID = 0xc6;
 
     var chkSum = cmdLength + devID + cmdType + cmdCode;
     chkSum = chkSum.toString(16);
@@ -683,13 +690,12 @@ function rotelWrite (cmdType, cmdCode) {
   
 
    // port.on('data', function () {
-         var err = "";
-
-        port.write(cmd, function(error, result) {
+        port.write(cmd, function(err, result) {
             // console.log("Console Write: " + cmd + " Returns: " + error + " / " + result);
-             if (err) {console.log("err: " + err); }
-             if (result) {console.log("result: " + result);}
+             if (err) {console.log("err: " + err.message); }
+             if (result) {console.log("result: " + result.message);}
              });
+        
    //    });
 }
 // Buffer to Hex
@@ -747,7 +753,3 @@ var myRotelCommands = [
         'VolumeDown': { 'type': 0x10, 'cmdCode': 0x12}
     }
 ]
-        
-
-
-
